@@ -8,8 +8,8 @@
 
 ```
 chatbot/
-├── chat-app/              # Next.js 14 frontend
-└── chatobot-backend/      # Laravel 12 backend (API)
+├── chat-app/              # Next.js 16 frontend
+└── chatobot-backend/      # Laravel 13 backend (API)
 ```
 
 ---
@@ -18,8 +18,8 @@ chatbot/
 
 | Layer     | Technology                                      |
 |-----------|-------------------------------------------------|
-| Frontend  | Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
-| Backend   | Laravel 12, PHP 8.4, MySQL                      |
+| Frontend  | Next.js 16, TypeScript, Tailwind CSS, shadcn/ui |
+| Backend   | Laravel 13, PHP 8.4, MySQL                      |
 | Streaming | Server-Sent Events (SSE)                        |
 | AI        | OpenAI, Anthropic Claude, Gemini, Ollama        |
 
