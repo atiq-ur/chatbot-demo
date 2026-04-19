@@ -10,7 +10,11 @@ class Message extends Model
     /** @use HasFactory<\Database\Factories\MessageFactory> */
     use HasFactory;
 
-    protected $fillable = ['chat_id', 'role', 'content'];
+    protected $fillable = ['chat_id', 'role', 'content', 'attachments', 'provider'];
+
+    protected $casts = [
+        'attachments' => 'array'
+    ];
 
     public function chat()
     {
