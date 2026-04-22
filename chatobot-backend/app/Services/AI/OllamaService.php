@@ -30,6 +30,7 @@ class OllamaService implements AIServiceInterface
 
     public function send($messagesContext): string
     {
+        info('from ollama');
         $response = Http::post(env('OLLAMA_URL', 'http://localhost:11434') . '/api/chat', [
             'model' => env('OLLAMA_MODEL', 'deepseek-v3.2:cloud'),
             'messages' => $this->formatMessages($messagesContext),

@@ -13,7 +13,8 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
-const API_BASE = "http://localhost:8000/api"
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api"
+const STORAGE_BASE = process.env.NEXT_PUBLIC_STORAGE_BASE ?? "http://localhost:8000/storage"
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'GPT-3.5',
@@ -222,13 +223,14 @@ export default function Home() {
 
       const assistantMsgId = Date.now() + 1
       setMessages(prev => [...prev, { role: "assistant", content: "", id: assistantMsgId, provider }])
-      setIsTyping(false)
+      // Keep isTyping=true until the first token arrives so the spinner stays visible
       setStreamingMsgId(assistantMsgId)
 
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
       let done = false, buffer = "", currentContent = "", lastUpdate = Date.now()
       let actualProvider = provider
+      let streamingStarted = false  // tracks first SSE event (even empty ones)
 
       while (reader && !done) {
         const { value, done: doneReading } = await reader.read()
@@ -246,10 +248,15 @@ export default function Home() {
               try {
                 const data = JSON.parse(dataStr)
                 if (data.error) throw new Error(data.error)
+                // Dismiss spinner on very first valid SSE event, even if text is empty
+                // (Ollama sends many {"text":""} events before real content)
+                if (!streamingStarted) {
+                  streamingStarted = true
+                  setIsTyping(false)
+                }
                 if (data.text) newTokens += data.text
                 if (data.meta?.provider) {
                   actualProvider = data.meta.provider
-                  // Update the message with the real provider
                   setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, provider: actualProvider } : m))
                 }
               } catch (_) {}
@@ -265,6 +272,8 @@ export default function Home() {
         }
       }
 
+      // Always clear spinner at end of stream (handles edge cases)
+      setIsTyping(false)
       setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: currentContent, provider: actualProvider } : m))
       setStreamingMsgId(null)
     } catch (e) {
@@ -310,7 +319,7 @@ export default function Home() {
             <SidebarTrigger />
             <h1 className="font-semibold text-sm tracking-wide">Nexus AI</h1>
           </div>
-          <Select value={provider} onValueChange={setProvider}>
+          <Select value={provider} onValueChange={(v) => v && setProvider(v)}>
             <SelectTrigger className="w-[180px] h-8 text-xs bg-muted/30 border-none shadow-none">
               <SelectValue placeholder="Select AI" />
             </SelectTrigger>
@@ -352,7 +361,7 @@ export default function Home() {
                             <img key={'lu-' + i} src={url} alt="img" className="w-40 rounded-xl border-2 border-muted shadow-sm object-cover" />
                           ))}
                           {(msg.attachments || []).filter((a: any) => (a.type ?? 'image') === 'image').map((a: any, i: number) => (
-                            <img key={'la-' + i} src={a.path.replace('public/', 'http://localhost:8000/storage/')} alt="img" className="w-40 rounded-xl border-2 border-muted shadow-sm object-cover" />
+                            <img key={'la-' + i} src={a.path.replace('public/', `${STORAGE_BASE}/`)} alt="img" className="w-40 rounded-xl border-2 border-muted shadow-sm object-cover" />
                           ))}
                         </div>
                       )}
@@ -386,9 +395,22 @@ export default function Home() {
                   ) : (
                     <div className="w-full min-w-0 px-2 py-1">
                       <div className="prose prose-sm dark:prose-invert max-w-none text-foreground prose-p:leading-7 prose-pre:p-0 prose-pre:bg-transparent">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
-                          {msg.content}
-                        </ReactMarkdown>
+                        {msg.content ? (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        ) : streamingMsgId === msg.id ? (
+                          // Empty content but streaming — show a waiting pulse
+                          <span className="inline-flex items-center gap-1.5 text-muted-foreground text-sm">
+                            <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:150ms]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:300ms]" />
+                          </span>
+                        ) : null}
+                        {/* Blinking cursor while streaming */}
+                        {streamingMsgId === msg.id && msg.content && (
+                          <span className="inline-block w-0.5 h-4 bg-current align-middle ml-0.5 animate-pulse" />
+                        )}
                       </div>
 
                       {/* Action bar: only after streaming done */}
