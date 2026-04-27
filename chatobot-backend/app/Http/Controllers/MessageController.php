@@ -54,7 +54,7 @@ class MessageController extends Controller
         return trim($text);
     }
 
-    public function store(Request $request, $chatId)
+    public function store(Request $request, $chatUuid)
     {
         $request->validate([
             'content' => 'nullable|string',
@@ -96,7 +96,7 @@ class MessageController extends Controller
             }
         }
 
-        $chat = Chat::findOrFail($chatId);
+        $chat = $request->user()->chats()->findOrFail($chatUuid);
         $provider = $request->input('provider', 'ollama');
 
         // Save ONLY the original user text to the database (no PDF binary)
@@ -211,5 +211,66 @@ class MessageController extends Controller
 
         // Prepend system prompt
         return collect([$systemPrompt])->merge($contextMessages);
+    }
+
+    public function storeTemporary(Request $request)
+    {
+        $request->validate([
+            'messages' => 'required|string', // Frontend will JSON stringify because of FormData
+            'provider' => 'nullable|string|in:openai,claude,gemini,ollama',
+            'images.*' => 'nullable|file|max:10240',
+            'files.*' => 'nullable|file|mimes:pdf|max:20480',
+        ]);
+
+        $provider = $request->input('provider', 'ollama');
+        $rawMessages = json_decode($request->input('messages', '[]'), true);
+        
+        $messages = collect($rawMessages)->map(function($msg) {
+            $obj = new \stdClass();
+            $obj->role = $msg['role'];
+            $obj->content = $msg['content'];
+            $obj->attachments = null;
+            return $obj;
+        });
+
+        $pdfTexts = [];
+        if ($request->hasFile('files')) {
+            foreach ($request->file('files') as $file) {
+                // In temporary chat, we might not want to save the file, but we need to extract text.
+                // We'll store it temporarily, extract, then delete.
+                $path = $file->store('public/temp_attachments');
+                $extractedText = $this->extractPdfText($path);
+                if (!empty($extractedText)) {
+                    $pdfTexts[] = "--- Content from PDF: {$file->getClientOriginalName()} ---\n{$extractedText}\n--- End of PDF ---";
+                }
+                \Illuminate\Support\Facades\Storage::delete($path);
+            }
+        }
+
+        $messagesContext = $this->buildContext($messages, $pdfTexts);
+        $aiService = AIFactory::make($provider);
+
+        return response()->stream(function () use ($aiService, $messagesContext, $provider) {
+            $usedProvider = $provider;
+            try {
+                foreach ($aiService->stream($messagesContext) as $chunk) {
+                    echo "data: " . json_encode(['text' => $chunk]) . "\n\n";
+                    if (ob_get_level() > 0) { ob_flush(); }
+                    flush();
+                }
+                echo "data: " . json_encode(['meta' => ['provider' => $usedProvider]]) . "\n\n";
+            } catch (\Exception $e) {
+                echo "data: " . json_encode(['error' => $e->getMessage()]) . "\n\n";
+                if (ob_get_level() > 0) { ob_flush(); }
+                flush();
+            }
+            echo "event: close\ndata: [DONE]\n\n";
+            if (ob_get_level() > 0) { ob_flush(); }
+            flush();
+        }, 200, [
+            'Cache-Control' => 'no-cache',
+            'X-Accel-Buffering' => 'no',
+            'Content-Type' => 'text/event-stream',
+        ]);
     }
 }
