@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { Send, Bot, Loader2, Copy, RefreshCw, Check, Paperclip, X, FileText } from "lucide-react"
+import { Send, Bot, Loader2, Copy, RefreshCw, Check, Paperclip, X, FileText, BookOpen } from "lucide-react"
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -37,13 +37,42 @@ const PROVIDER_COLORS: Record<string, string> = {
 // --- CopyButton ---
 function CopyButton({ text, label = "Copy" }: { text: string, label?: string }) {
   const [copied, setCopied] = useState(false)
+  const [error, setError] = useState(false)
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        // Fallback for HTTP / non-secure contexts
+        const textarea = document.createElement("textarea")
+        textarea.value = text
+        textarea.style.position = "fixed"
+        textarea.style.opacity = "0"
+        document.body.appendChild(textarea)
+        textarea.focus()
+        textarea.select()
+        const ok = document.execCommand("copy")
+        document.body.removeChild(textarea)
+        if (!ok) throw new Error("execCommand failed")
+      }
+      setCopied(true)
+      setError(false)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (e) {
+      console.error("Copy failed:", e)
+      setError(true)
+      setTimeout(() => setError(false), 2000)
+    }
+  }
+
   return (
     <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      onClick={handleCopy}
+      className={`flex items-center gap-1 text-xs transition-colors ${error ? "text-red-400 hover:text-red-300" : "text-muted-foreground hover:text-foreground"}`}
     >
       {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-      {copied ? "Copied!" : label}
+      {copied ? "Copied!" : error ? "Failed!" : label}
     </button>
   )
 }
@@ -148,6 +177,7 @@ export default function ChatInterface({ initialChatId = null }: { initialChatId?
   const [isTyping, setIsTyping] = useState(false)
   const [streamingMsgId, setStreamingMsgId] = useState<number | null>(null)
   const [provider, setProvider] = useState("ollama")
+  const [useRag, setUseRag] = useState(true)
   const router = useRouter()
   const user = getUser()
   const [isTemporary, setIsTemporary] = useState(user ? false : true)
@@ -262,6 +292,7 @@ export default function ChatInterface({ initialChatId = null }: { initialChatId?
     const formData = new FormData()
     formData.append("content", contentToSend)
     formData.append("provider", provider)
+    formData.append("use_rag", useRag ? "1" : "0")
     imagesToUpload.forEach(f => formData.append("images[]", f))
     pdfsToUpload.forEach(f => formData.append("files[]", f))
 
@@ -288,7 +319,7 @@ export default function ChatInterface({ initialChatId = null }: { initialChatId?
       if (!res.ok) throw new Error('Failed to fetch')
 
       const assistantMsgId = Date.now() + 1
-      setMessages(prev => [...prev, { role: "assistant", content: "", id: assistantMsgId, provider }])
+      setMessages(prev => [...prev, { role: "assistant", content: "", id: assistantMsgId, provider, rag_sources: [] }])
       // Keep isTyping=true until the first token arrives so the spinner stays visible
       setStreamingMsgId(assistantMsgId)
 
@@ -323,7 +354,8 @@ export default function ChatInterface({ initialChatId = null }: { initialChatId?
                 if (data.text) newTokens += data.text
                 if (data.meta?.provider) {
                   actualProvider = data.meta.provider
-                  setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, provider: actualProvider } : m))
+                  const ragSources = data.meta.rag_sources || []
+                  setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, provider: actualProvider, rag_sources: ragSources } : m))
                 }
               } catch (_) {}
             }
@@ -401,20 +433,29 @@ export default function ChatInterface({ initialChatId = null }: { initialChatId?
                 <Link href="/register" className="text-sm font-medium bg-primary text-primary-foreground px-3 py-1.5 rounded-md hover:bg-primary/90 transition-colors">Sign up</Link>
               </div>
             ) : (
-              <div className="flex items-center gap-2 mr-2">
-                <span className="text-xs font-medium text-muted-foreground">Temp Chat</span>
-                <Switch 
-                  checked={isTemporary} 
-                  onCheckedChange={(checked) => {
-                    setIsTemporary(checked)
-                    if (checked) {
-                      // Reset to fresh temp chat state without page navigation
-                      setActiveChatId(null)
-                      setMessages([])
-                      window.history.replaceState(null, '', '/')
-                    }
-                  }} 
-                />
+              <div className="flex items-center gap-3 mr-2">
+                {/* RAG Toggle */}
+                <div className="flex items-center gap-1.5">
+                  <BookOpen className={`w-3.5 h-3.5 ${useRag ? 'text-blue-500' : 'text-muted-foreground'}`} />
+                  <span className="text-xs font-medium text-muted-foreground">Docs</span>
+                  <Switch checked={useRag} onCheckedChange={setUseRag} />
+                </div>
+                <div className="w-px h-5 bg-border" />
+                {/* Temp Chat Toggle */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">Temp</span>
+                  <Switch 
+                    checked={isTemporary} 
+                    onCheckedChange={(checked) => {
+                      setIsTemporary(checked)
+                      if (checked) {
+                        setActiveChatId(null)
+                        setMessages([])
+                        window.history.replaceState(null, '', '/')
+                      }
+                    }} 
+                  />
+                </div>
               </div>
             )}
             <Select value={provider} onValueChange={(v) => v && setProvider(v)}>
@@ -514,18 +555,32 @@ export default function ChatInterface({ initialChatId = null }: { initialChatId?
 
                       {/* Action bar: only after streaming done */}
                       {streamingMsgId !== msg.id && (
-                        <div className="flex items-center gap-4 mt-3 pl-1 flex-wrap">
-                          {/* Provider badge */}
-                          {msg.provider && (
-                            <span className={`text-[11px] font-medium ${PROVIDER_COLORS[msg.provider] ?? 'text-muted-foreground'} flex items-center gap-1`}>
-                              <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80 inline-block" />
-                              {PROVIDER_LABELS[msg.provider] ?? msg.provider}
-                            </span>
+                        <div className="flex flex-col gap-2 mt-3 pl-1">
+                          <div className="flex items-center gap-4 flex-wrap">
+                            {/* Provider badge */}
+                            {msg.provider && (
+                              <span className={`text-[11px] font-medium ${PROVIDER_COLORS[msg.provider] ?? 'text-muted-foreground'} flex items-center gap-1`}>
+                                <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80 inline-block" />
+                                {PROVIDER_LABELS[msg.provider] ?? msg.provider}
+                              </span>
+                            )}
+                            <CopyButton text={msg.content} />
+                            <button onClick={() => handleRetry(idx)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                              <RefreshCw className="w-3 h-3" /> Retry
+                            </button>
+                          </div>
+                          {/* RAG Source Citations */}
+                          {msg.rag_sources?.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              {msg.rag_sources.map((src: any, i: number) => (
+                                <span key={i} className="inline-flex items-center gap-1 text-[10px] bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full border border-blue-500/20">
+                                  <BookOpen className="w-2.5 h-2.5" />
+                                  {src.document_title}
+                                  <span className="opacity-60">({src.relevance}%)</span>
+                                </span>
+                              ))}
+                            </div>
                           )}
-                          <CopyButton text={msg.content} />
-                          <button onClick={() => handleRetry(idx)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                            <RefreshCw className="w-3 h-3" /> Retry
-                          </button>
                         </div>
                       )}
                     </div>

@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\MessageController;
 
 Route::get('/user', function (Request $request) {
@@ -24,4 +25,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/chats/{id}', [ChatController::class, 'destroy']);
 
     Route::post('/chats/{id}/messages', [MessageController::class, 'store']);
+
+    // Document routes — viewable by all authenticated users
+    Route::get('/documents', [DocumentController::class, 'index']);
+    Route::get('/documents/categories', [DocumentController::class, 'categories']);
+    Route::get('/documents/stats', [DocumentController::class, 'stats']);
+    Route::get('/documents/{id}', [DocumentController::class, 'show']);
+
+    // Document management — admin only
+    Route::middleware('admin')->group(function () {
+        Route::post('/documents/upload', [DocumentController::class, 'upload']);
+        Route::post('/documents/ingest-url', [DocumentController::class, 'ingestUrl']);
+        Route::post('/documents/{id}/reindex', [DocumentController::class, 'reindex']);
+        Route::delete('/documents/{id}', [DocumentController::class, 'destroy']);
+    });
 });

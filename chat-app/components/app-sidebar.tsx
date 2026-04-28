@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { MessageSquarePlus, RefreshCw, MessageCircle, Trash2 } from "lucide-react"
+import { MessageSquarePlus, RefreshCw, MessageCircle, Trash2, BookOpen } from "lucide-react"
 import { toast } from "sonner"
 import {
   AlertDialog,
@@ -81,6 +81,19 @@ export function AppSidebar({ chats, fetchChats, createChat, loadChat, deleteChat
                       <span className="text-sm">New Session</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
+                  {user?.role === 'admin' && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        render={<a href="/documents" />}
+                        className="hover:bg-muted font-medium transition-all h-10 px-3 cursor-pointer rounded-xl w-full justify-start"
+                      >
+                        <div className="bg-blue-500/10 rounded-full p-1 text-blue-500 shadow-sm mr-2">
+                          <BookOpen className="h-3.5 w-3.5" />
+                        </div>
+                        <span className="text-sm">Knowledge Base</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
                 </SidebarMenu>
               </SidebarGroup>
 

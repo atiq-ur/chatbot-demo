@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Chat;
 use App\Models\Message;
 use App\Services\AI\AIFactory;
+use App\Services\RAG\EmbeddingService;
+use App\Services\RAG\VectorSearchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -61,6 +63,7 @@ class MessageController extends Controller
             'provider' => 'nullable|string|in:openai,claude,gemini,ollama',
             'images.*' => 'nullable|file|max:10240',
             'files.*' => 'nullable|file|mimes:pdf|max:20480',
+            'use_rag' => 'nullable|boolean',
         ]);
 
         $attachments = [];
@@ -109,13 +112,34 @@ class MessageController extends Controller
             'provider' => $provider,
         ]);
 
+        // RAG: Retrieve relevant document chunks if enabled
+        $useRag = filter_var($request->input('use_rag', true), FILTER_VALIDATE_BOOLEAN);
+        $ragContext = '';
+        $ragCitations = [];
+
+        if ($useRag && !empty($originalContent)) {
+            try {
+                $embeddingService = new EmbeddingService();
+                $searchService = new VectorSearchService($embeddingService);
+                $relevantChunks = $searchService->search($originalContent, topK: 5);
+
+                if ($relevantChunks->isNotEmpty()) {
+                    $ragContext = $searchService->formatContext($relevantChunks);
+                    $ragCitations = $searchService->getCitations($relevantChunks);
+                }
+            } catch (\Exception $e) {
+                // RAG failure should not block the response — log and continue
+                \Illuminate\Support\Facades\Log::warning('RAG search failed: ' . $e->getMessage());
+            }
+        }
+
         // Build context with sliding window, then inject PDF text into last user message only
         $allMessages = $chat->messages()->orderBy('created_at', 'asc')->get();
-        $messagesContext = $this->buildContext($allMessages, $pdfTexts);
+        $messagesContext = $this->buildContext($allMessages, $pdfTexts, $ragContext);
 
         $aiService = AIFactory::make($provider);
 
-        return response()->stream(function () use ($aiService, $messagesContext, $chat, $provider) {
+        return response()->stream(function () use ($aiService, $messagesContext, $chat, $provider, $ragCitations) {
             $fullContent = '';
             $usedProvider = $provider;
             try {
@@ -149,8 +173,12 @@ class MessageController extends Controller
                     ]);
                 }
 
-                // Send metadata about which provider actually answered
-                echo "data: " . json_encode(['meta' => ['provider' => $usedProvider]]) . "\n\n";
+                // Send metadata about which provider actually answered + RAG citations
+                $meta = ['provider' => $usedProvider];
+                if (!empty($ragCitations)) {
+                    $meta['rag_sources'] = $ragCitations;
+                }
+                echo "data: " . json_encode(['meta' => $meta]) . "\n\n";
 
             } catch (\Exception $e) {
                 echo "data: " . json_encode(['error' => $e->getMessage()]) . "\n\n";
@@ -172,16 +200,28 @@ class MessageController extends Controller
      * Build an optimized context window with system prompt and sliding window.
      * PDF text is injected into the last user message content for the AI only —
      * it is NOT stored in the database, so chat history stays clean.
+     * RAG context is injected into the system prompt when available.
      */
-    private function buildContext($allMessages, array $pdfTexts = [])
+    private function buildContext($allMessages, array $pdfTexts = [], string $ragContext = '')
     {
-        $systemPrompt = new \stdClass();
-        $systemPrompt->role = 'system';
-        $systemPrompt->content = "You are Nexus AI, a highly capable personal assistant for software engineers. " .
+        // Build system prompt — enhance with RAG context when available
+        $basePrompt = "You are Nexus AI, a highly capable personal assistant for software engineers. " .
             "You help with coding, debugging, architecture, code reviews, and general software development questions. " .
             "Be concise but thorough. Use markdown formatting for code and structured output. " .
             "When showing code, always specify the language for proper syntax highlighting. " .
             "When PDF content is provided, summarize or answer questions based on its content accurately.";
+
+        if (!empty($ragContext)) {
+            $basePrompt .= "\n\nYou have access to internal company documentation below. " .
+                "When answering, prioritize information from these documents. " .
+                "If the answer is found in the documents, cite the source document name. " .
+                "If the documents don't contain relevant information, answer from your general knowledge " .
+                "but mention that the answer is not from company docs.\n\n" . $ragContext;
+        }
+
+        $systemPrompt = new \stdClass();
+        $systemPrompt->role = 'system';
+        $systemPrompt->content = $basePrompt;
         $systemPrompt->attachments = null;
 
         // Use a sliding window: keep the first message + last 20 messages
@@ -220,6 +260,7 @@ class MessageController extends Controller
             'provider' => 'nullable|string|in:openai,claude,gemini,ollama',
             'images.*' => 'nullable|file|max:10240',
             'files.*' => 'nullable|file|mimes:pdf|max:20480',
+            'use_rag' => 'nullable|boolean',
         ]);
 
         $provider = $request->input('provider', 'ollama');
@@ -247,10 +288,34 @@ class MessageController extends Controller
             }
         }
 
-        $messagesContext = $this->buildContext($messages, $pdfTexts);
+        // RAG: Retrieve relevant document chunks for temporary chats too
+        $useRag = filter_var($request->input('use_rag', true), FILTER_VALIDATE_BOOLEAN);
+        $ragContext = '';
+        $ragCitations = [];
+
+        if ($useRag) {
+            // Use the last user message as the query
+            $lastUserMsg = collect($rawMessages)->where('role', 'user')->last();
+            if ($lastUserMsg && !empty($lastUserMsg['content'])) {
+                try {
+                    $embeddingService = new EmbeddingService();
+                    $searchService = new VectorSearchService($embeddingService);
+                    $relevantChunks = $searchService->search($lastUserMsg['content'], topK: 5);
+
+                    if ($relevantChunks->isNotEmpty()) {
+                        $ragContext = $searchService->formatContext($relevantChunks);
+                        $ragCitations = $searchService->getCitations($relevantChunks);
+                    }
+                } catch (\Exception $e) {
+                    \Illuminate\Support\Facades\Log::warning('RAG search failed (temp): ' . $e->getMessage());
+                }
+            }
+        }
+
+        $messagesContext = $this->buildContext($messages, $pdfTexts, $ragContext);
         $aiService = AIFactory::make($provider);
 
-        return response()->stream(function () use ($aiService, $messagesContext, $provider) {
+        return response()->stream(function () use ($aiService, $messagesContext, $provider, $ragCitations) {
             $usedProvider = $provider;
             try {
                 foreach ($aiService->stream($messagesContext) as $chunk) {
@@ -258,7 +323,13 @@ class MessageController extends Controller
                     if (ob_get_level() > 0) { ob_flush(); }
                     flush();
                 }
-                echo "data: " . json_encode(['meta' => ['provider' => $usedProvider]]) . "\n\n";
+
+                // Send metadata with RAG citations
+                $meta = ['provider' => $usedProvider];
+                if (!empty($ragCitations)) {
+                    $meta['rag_sources'] = $ragCitations;
+                }
+                echo "data: " . json_encode(['meta' => $meta]) . "\n\n";
             } catch (\Exception $e) {
                 echo "data: " . json_encode(['error' => $e->getMessage()]) . "\n\n";
                 if (ob_get_level() > 0) { ob_flush(); }
